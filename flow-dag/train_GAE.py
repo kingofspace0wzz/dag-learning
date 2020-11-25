@@ -116,7 +116,7 @@ parser.add_argument('--decoder-hidden', type=int, default=64,
                     help='Number of hidden units.')
 parser.add_argument('--temp', type=float, default=0.5,
                     help='Temperature for Gumbel softmax.')
-parser.add_argument('--k_max_iter', type = int, default = 1e2,
+parser.add_argument('--k_max_iter', type = int, default = 300,
                     help ='the max iteration number for searching lambda and c')
 
 parser.add_argument('--encoder', type=str, default='mlp',
@@ -211,13 +211,15 @@ rel_send = torch.DoubleTensor(rel_send)
 
 # add adjacency matrix A
 num_nodes = args.data_variable_size
-adj_A = np.zeros((num_nodes, num_nodes))
+# adj_A = np.zeros((num_nodes, num_nodes))
+adj_A = np.random.standard_normal((num_nodes, num_nodes))
 # mask_A = np.ones((num_nodes, num_nodes), dtype=np.float) - np.eye(num_nodes, dtype=np.float)
 args.lower = not args.no_lower
 if args.lower:
-    mask_A = np.tril(np.ones((num_nodes, num_nodes), dtype=np.float)) - np.eye(num_nodes, dtype=np.float)
+    # mask_A = np.triu(np.ones((num_nodes, num_nodes), dtype=np.float)) - np.eye(num_nodes, dtype=np.float)
+    mask_A = np.ones((num_nodes, num_nodes), dtype=np.float) - np.eye(num_nodes, dtype=np.float)
 else:
-    mask_A = np.ones((num_nodes, num_nodes), dtype=np.float)
+    mask_A = np.ones((num_nodes, num_nodes), dtype=np.float) - np.eye(num_nodes, dtype=np.float)
 if args.mode == 'gran':
     model = LearnableModel_NonLinGaussANM(args.data_variable_size * args.x_dims, 3, args.encoder_hidden)
 else:
@@ -235,19 +237,20 @@ birkhoff = BirkhoffPoly(num_nodes)
 #===================================
 # set up training parameters
 #===================================
-if args.optimizer == 'Adam':
+if args.optimizer  == 'Adam':
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 elif args.optimizer == 'LBFGS':
     optimizer = optim.LBFGS(model.parameters(),
                             lr=args.lr)
 elif args.optimizer == 'SGD':
     optimizer = optim.SGD(model.parameters(),
-                            lr=args.lr)
+                            lr=args.lr)  
 scheduler = lr_scheduler.StepLR(optimizer, step_size=args.lr_decay,
                                 gamma=args.gamma)
 
 # set up Riemannian Adam
-rie_optimizer = RiemannianAdam(birkhoff.parameters(), lr=args.lr)
+# rie_optimizer = RiemannianAdam(birkhoff.parameters(), lr=args.lr)
+rie_optimizer = optim.Adam(birkhoff.parameters(), lr=args.lr)
 
 if args.prior:
     prior = np.array([0.91, 0.03, 0.03, 0.03])  # hard coded for now
@@ -369,7 +372,7 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
 
 
     # update optimizer
-    optimizer, lr = update_optimizer(optimizer, args.lr, c_A)
+    # optimizer, lr = update_optimizer(optimizer, args.lr, c_A)
 
     # for i in range(10000):
     #     rie_optimizer.zero_grad()
@@ -388,19 +391,25 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
         optimizer.zero_grad()
         rie_optimizer.zero_grad()
 
+        log_alpha = birkhoff.Matrix
+        permute, log_alpha_w_noise = gumbel_sinkhorn(log_alpha, temp=args.temp)
+        inv_soft_perms = inv_soft_pers_flattened(permute)
+        permute = permute.squeeze()
+        x_permute = torch.matmul(permute, data)
+
         # use BirkhoffPolyope to permute the input
 
         # if args.epoch <= args.post_train:
-        x_permute = birkhoff(data)
+        # x_permute = birkhoff(data)
         # x_permute = x_permute.squeeze()
-        permute = birkhoff.Matrix
+        # permute = birkhoff.Matrix
         # print(permute)
         # else:
         #     permute = hard_permutation(birkhoff.Matrix)
         #     x_permute = torch.matmul(permute, data)
 
         if args.lower:
-            preds, origin_A, myA = model(x_permute, rel_rec, rel_send)
+            preds, origin_A, myA = model(data, rel_rec, rel_send)
         else:
             preds, origin_A, myA = model(data, rel_rec, rel_send)
         
@@ -408,6 +417,8 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
             print('nan error\n')
 
         variance = 0.
+
+        A_permute = torch.matmul(permute, origin_A)
 
         #=================================
         # Computing the losses
@@ -420,7 +431,8 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
         # loss = nll_gaussian(preds, data, variance)
         # least squares
         if args.lower:
-            loss = F.mse_loss(preds, x_permute) + F.mse_loss(torch.matmul(permute.t(), preds), data)
+            # loss = F.mse_loss(preds, x_permute) + F.mse_loss(torch.matmul(permute.t(), preds), data)
+            loss = F.mse_loss(preds, data)
         else:
             loss = F.mse_loss(preds, data)
        
@@ -436,10 +448,14 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
         # loss += args.ortho_b * ortho_loss(birkhoff.Matrix)
         # loss += args.sparse_A * torch.sum(torch.abs(torch.matmul(torch.inverse(permute), torch.matmul(origin_A, permute))))
 
+        # Make P^T A triangular
+        # loss += torch.norm(A_permute.tril() - torch.zeros_like(A_permute), p='fro')
+        loss += torch.norm(A_permute.tril() - torch.zeros_like(A_permute), p=1)
+
         # add A loss
         one_adj_A = origin_A # torch.mean(adj_A_tilt_decoder, dim =0)
-        # sparse_loss = args.tau_A * torch.sum(torch.abs(one_adj_A))
-        sparse_loss = args.tau_A * torch.norm(origin_A, p=1)
+        sparse_loss = args.tau_A * torch.sum(torch.abs(one_adj_A))
+        # loss += sparse_loss
 
         # other loss term
         if args.use_A_connect_loss:
@@ -460,11 +476,12 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
         # computing the losses finished
         #=========================
         loss.backward()
-        loss = optimizer.step()
-        if args.epoch <= args.post_train:
-            rie_optimizer.step()
+        optimizer.step()
+        rie_optimizer.step()
+        # if args.epoch <= args.post_train:
+        #     rie_optimizer.step()
 
-        # myA.data = stau(myA.data, args.tau_A*lr)
+        # myA.data = stau(myA.data, args.tau_A*args.lr)
 
         if torch.sum(origin_A != origin_A):
             print('nan error\n')
@@ -479,7 +496,8 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
         # hard_permute = hard_permutation(permute)
         # Adj = torch.matmul(hard_permute.t(), torch.matmul(origin_A, hard_permute))
         # print(permute)
-        Adj = torch.matmul(torch.inverse(permute), torch.matmul(origin_A, permute))
+        # Adj = torch.matmul(torch.inverse(permute), torch.matmul(origin_A, permute))
+        Adj = origin_A
         # if args.epoch > args.post_train:
         #     permute = hard_permutation(permute)
         # print(origin_A)
@@ -521,7 +539,7 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
         print('error on assign')
 
 
-    return np.mean(mse_train), graph, origin_A, Adj, permute
+    return np.mean(mse_train), graph, origin_A, origin_A, permute
 
 def train_gran(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
     t = time.time()
@@ -537,7 +555,7 @@ def train_gran(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
 
 
     # update optimizer
-    optimizer, lr = update_optimizer(optimizer, args.lr, c_A)
+    # optimizer, lr = update_optimizer(optimizer, args.lr, c_A)
 
     # for i in range(10000):
     #     rie_optimizer.zero_grad()
@@ -701,51 +719,71 @@ def run():
     h_tol = args.h_tol
     k_max_iter = int(args.k_max_iter)
     h_A_old = np.inf
-    if args.lower:
-        for i in tqdm(range(args.pre_train)):
-            rie_optimizer.zero_grad()
-            loss = 1000000 * torch.sum(torch.abs(birkhoff.Matrix)) + 1000000 * ortho_loss(birkhoff.Matrix)
-            loss.backward()
-            rie_optimizer.step()
+    # if args.lower:
+    #     for i in tqdm(range(args.pre_train)):
+    #         rie_optimizer.zero_grad()
+    #         loss = 1000000 * torch.sum(torch.abs(birkhoff.Matrix)) + 1000000 * ortho_loss(birkhoff.Matrix)
+    #         loss.backward()
+    #         rie_optimizer.step()
     args.epoch = 0
     try:
-        for step_k in range(k_max_iter):
-            while c_A < 1e+20:
-                for epoch in range(args.epochs):
-                    if args.mode == 'gran':
-                        MSE_loss, graph, origin_A, Adj, permute = train_gran(epoch, best_ELBO_loss, ground_truth_G, lambda_A, c_A, optimizer)
-                    else:
-                        MSE_loss, graph, origin_A, Adj, permute = train_lower(epoch, best_ELBO_loss, ground_truth_G, lambda_A, c_A, optimizer)
-            
-                    if MSE_loss < best_MSE_loss:
-                        best_MSE_loss = MSE_loss
-                        best_epoch = epoch
-                        best_MSE_graph = graph
-                    if epoch % 20 == 0:
-                        print('Permutation:\n {}'.format(permute))
-                        print('origin A:\n {}'.format(origin_A))
-                        print('I:\n{}'.format(torch.matmul(permute.t(), permute)))
-                    args.epoch += 1
-
-
-                print("Optimization Finished!")
-                print("Best Epoch: {:04d}".format(best_epoch))
-
-                # update parameters
-                A_new = origin_A.data.clone()
-                h_A_new = _h_A(A_new, args.data_variable_size)
-                if h_A_new.item() > 0.25 * h_A_old:
-                    c_A*=10
+        if args.lower:
+            for epoch in range(args.epochs):
+                if args.mode == 'gran':
+                    MSE_loss, graph, origin_A, Adj, permute = train_gran(epoch, best_ELBO_loss, ground_truth_G, lambda_A, c_A, optimizer)
                 else:
+                    MSE_loss, graph, origin_A, Adj, permute = train_lower(epoch, best_ELBO_loss, ground_truth_G, lambda_A, c_A, optimizer)
+        
+                if MSE_loss < best_MSE_loss:
+                    best_MSE_loss = MSE_loss
+                    best_epoch = epoch
+                    best_MSE_graph = graph
+                if epoch % 20 == 0:
+                    print('Permutation:\n {}'.format(permute))
+                    print('origin A:\n {}'.format(origin_A))
+                    print('I:\n{}'.format(torch.matmul(permute.t(), permute)))
+                args.epoch += 1
+
+            print("Optimization Finished!")
+            print("Best Epoch: {:04d}".format(best_epoch))
+        else:
+            for step_k in range(k_max_iter):
+                while c_A < 1e+20:
+                    for epoch in range(args.epochs):
+                        if args.mode == 'gran':
+                            MSE_loss, graph, origin_A, Adj, permute = train_gran(epoch, best_ELBO_loss, ground_truth_G, lambda_A, c_A, optimizer)
+                        else:
+                            MSE_loss, graph, origin_A, Adj, permute = train_lower(epoch, best_ELBO_loss, ground_truth_G, lambda_A, c_A, optimizer)
+                
+                        if MSE_loss < best_MSE_loss:
+                            best_MSE_loss = MSE_loss
+                            best_epoch = epoch
+                            best_MSE_graph = graph
+                        if epoch % 20 == 0:
+                            print('Permutation:\n {}'.format(permute))
+                            print('origin A:\n {}'.format(origin_A))
+                            print('I:\n{}'.format(torch.matmul(permute.t(), permute)))
+                        args.epoch += 1
+
+
+                    print("Optimization Finished!")
+                    print("Best Epoch: {:04d}".format(best_epoch))
+
+                    # update parameters
+                    A_new = origin_A.data.clone()
+                    h_A_new = _h_A(A_new, args.data_variable_size)
+                    if h_A_new.item() > 0.25 * h_A_old:
+                        c_A*=10
+                    else:
+                        break
+
+                    # update parameters
+                    # h_A, adj_A are computed in loss anyway, so no need to store
+                h_A_old = h_A_new.item()
+                lambda_A += c_A * h_A_new.item()
+
+                if h_A_new.item() <= h_tol:
                     break
-
-                # update parameters
-                # h_A, adj_A are computed in loss anyway, so no need to store
-            h_A_old = h_A_new.item()
-            lambda_A += c_A * h_A_new.item()
-
-            if h_A_new.item() <= h_tol:
-                break
 
 
         if args.save_folder:

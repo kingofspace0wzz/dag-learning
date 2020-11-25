@@ -300,17 +300,18 @@ def my_matching(matrix_batch):
       problem  max_P sum_i,j M_i,j P_i,j with M = matrix_batch[n, :, :].
   """
 
-  def hungarian(x):
-    if x.ndim == 2:
-      x = np.reshape(x, [1, x.shape[0], x.shape[1]])
-    sol = np.zeros((x.shape[0], x.shape[1]), dtype=np.int32)
-    for i in range(x.shape[0]):
-      sol[i, :] = linear_sum_assignment(-x[i, :])[1].astype(np.int32)
-    return sol
 
   listperms = hungarian(matrix_batch.detach().cpu().numpy())
   listperms = torch.from_numpy(listperms)
   return listperms
+
+def hungarian(x):
+  if x.ndim == 2:
+    x = np.reshape(x, [1, x.shape[0], x.shape[1]])
+  sol = np.zeros((x.shape[0], x.shape[1]), dtype=np.int32)
+  for i in range(x.shape[0]):
+    sol[i, :] = linear_sum_assignment(-x[i, :])[1].astype(np.int32)
+  return sol
 
 def my_kendall_tau(batch_perm1, batch_perm2):
   """Wraps scipy.stats kendalltau function.
@@ -380,7 +381,4 @@ if __name__ == "__main__":
  
   # inv_soft_perms_flat = inv_soft_pers_flattened(soft_perms_inf, 1)
   # loss= criterion(train_ordered_tiled, torch.matmul(inv_soft_perms_flat, train_random))
-  permutations = my_sample_permutations(1, 4)
-  print(permutations)
-  eye = my_listperm2matperm(permutations)
-  print(eye)
+  pass

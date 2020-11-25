@@ -145,11 +145,13 @@ class BirkhoffPoly(nn.Module):
         # self.initial_permutation = my_listperm2matperm(perm).squeeze(0).float() + torch.normal(mean=torch.zeros(n, n).float(), std=torch.ones(n, n)/10)
         # self.initial_permutation = my_listperm2matperm(per).squeeze(0).float() + torch.normal(mean=torch.zeros(n, n).float(), std=torch.ones(n, n)/10)
         # self.initial_permutation = ManifoldTensor(self.manifold.projx(self.initial_permutation), manifold=BirkhoffPolytope())
-        self.Matrix = ManifoldParameter(
-                data=self.manifold.random(n, n),
-                # data = self.initial_permutation,
-                manifold=self.manifold
-            )
+        # self.Matrix = ManifoldParameter(
+        #         data=self.manifold.random(n, n),
+        #         # data = self.initial_permutation,
+        #         manifold=self.manifold
+        #     )
+
+        self.Matrix = nn.Parameter(torch.randn(n, n))
         
 
     def forward(self, x=None):

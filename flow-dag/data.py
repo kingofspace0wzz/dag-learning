@@ -256,7 +256,7 @@ def simulate_random_dag(d: int,
     # random permutation
     P = np.random.permutation(np.eye(d, d))  # permutes first axis only
     B_perm = P.T.dot(B).dot(P)
-    U = np.random.uniform(low=w_range[0], high=w_range[1], size=[d, d])
+    U = 1*np.random.uniform(low=w_range[0], high=w_range[1], size=[d, d])
     U[np.random.rand(d, d) < 0.5] *= -1
     W = (B_perm != 0).astype(float) * U
     G = nx.DiGraph(W)

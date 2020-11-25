@@ -51,7 +51,7 @@ parser.add_argument('--data_filename', type=str, default= 'alarm',
                     help='data file name containing the discrete files.')
 parser.add_argument('--data_dir', type=str, default= 'data/',
                     help='data file name containing the discrete files.')
-parser.add_argument('--data_sample_size', type=int, default=1000,
+parser.add_argument('--data_sample_size', type=int, default=5000,
                     help='the number of samples of data')
 parser.add_argument('--data_variable_size', type=int, default=10,
                     help='the number of variables in synthetic generated data')
@@ -210,13 +210,14 @@ rel_send = torch.DoubleTensor(rel_send)
 
 # add adjacency matrix A
 num_nodes = args.data_variable_size
-adj_A = np.zeros((num_nodes, num_nodes))
+adj_A = np.ones((num_nodes, num_nodes))
 # mask_A = np.ones((num_nodes, num_nodes), dtype=np.float) - np.eye(num_nodes, dtype=np.float)
 args.lower = not args.no_lower
 if args.lower:
-    mask_A = np.tril(np.ones((num_nodes, num_nodes), dtype=np.float)) - np.eye(num_nodes, dtype=np.float)
+    # mask_A = np.tril(np.ones((num_nodes, num_nodes), dtype=np.float)) - np.eye(num_nodes, dtype=np.float)
+    mask_A = np.ones((num_nodes, num_nodes), dtype=np.float) - np.eye(num_nodes, dtype=np.float)
 else:
-    mask_A = np.ones((num_nodes, num_nodes), dtype=np.float)
+    mask_A = np.ones((num_nodes, num_nodes), dtype=np.float) - np.eye(num_nodes, dtype=np.float)
 if args.encoder == 'mlp':
     encoder = MLPEncoder(args.data_variable_size * args.x_dims, args.x_dims, args.encoder_hidden,
                             int(args.z_dims), adj_A, mask_A,
@@ -264,7 +265,7 @@ scheduler = lr_scheduler.StepLR(optimizer, step_size=args.lr_decay,
                                 gamma=args.gamma)
 
 # set up Riemannian Adam
-rie_optimizer = RiemannianAdam(birkhoff.parameters(), lr=args.lr)
+rie_optimizer = RiemannianAdam(birkhoff.parameters(), lr=args.lr*10)
 
 if args.prior:
     prior = np.array([0.91, 0.03, 0.03, 0.03])  # hard coded for now
@@ -422,7 +423,7 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
         # else:
         #     permute = hard_permutation(birkhoff.Matrix)
         #     x_permute = torch.matmul(permute, data)
-
+        
         enc_x, logits, origin_A, adj_A_tilt_encoder, z_gap, z_positive, myA, Wa = encoder(x_permute, rel_rec, rel_send, permute)  # logits is of size: [num_sims, z_dims]
         edges = logits
         # print(origin_A)
@@ -430,10 +431,12 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
 
         if torch.sum(output != output):
             print('nan error\n')
-
+        
         target = data
         preds = output
         variance = 0.
+
+        A_permute = torch.matmul(permute, origin_A)
 
         #=================================
         # Computing the losses
@@ -443,6 +446,7 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
         # Gaussian, Maximum Likelihood
         # P X = A^T P X + Z, X = P^T A^T P X + P^T Z 
         if args.lower:
+            # loss_nll = nll_gaussian(torch.matmul(permute.t(), preds), target, variance)
             loss_nll = nll_gaussian(preds, x_permute, variance)
             # loss_nll = nll_gaussian(torch.matmul(torch.inverse(permute), preds), data, variance)
         else:
@@ -452,32 +456,33 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
 
         # KL loss
         if args.lower:
-            loss_kl = kl_gaussian_sem(torch.matmul(torch.inverse(permute), logits))
+            loss_kl = kl_gaussian_sem(logits)
         else:
             loss_kl = kl_gaussian_sem(logits)
         # loss_kl = kl_gaussian(logits, logits.size(-1))
 
         # ELBO loss:
-        loss = loss_kl + loss_nll
+        # loss = loss_kl + loss_nll
         # loss = loss_nll
 
         # MSE loss:
-        # loss = F.mse_loss(preds, x_permute)
+        loss = 0.5 * F.mse_loss(preds, x_permute)
 
         # sinkhorn loss:
         # sink_loss = F.mse_loss(data, torch.matmul(inv_soft_perms, x_permute))
         # loss += args.lambda_sink * sink_loss
 
         # birkhoff loss:
-        if args.lower:
-            loss += args.sparse_b * torch.sum(torch.abs(birkhoff.Matrix))
-            loss += args.ortho_b * ortho_loss(birkhoff.Matrix)
-            loss += args.sparse_A * torch.sum(torch.abs(torch.matmul(torch.inverse(permute), torch.matmul(origin_A, permute))))
+        # if args.lower:
+        #     loss += args.sparse_b * torch.sum(torch.abs(birkhoff.Matrix))
+        #     loss += args.ortho_b * ortho_loss(birkhoff.Matrix)
+        #     loss += args.sparse_A * torch.sum(torch.abs(torch.matmul(torch.inverse(permute), torch.matmul(origin_A, permute))))
 
         # add A loss
-        one_adj_A = origin_A # torch.mean(adj_A_tilt_decoder, dim =0)
+        # one_adj_A = origin_A # torch.mean(adj_A_tilt_decoder, dim =0)
+        one_adj_A = A_permute
         sparse_loss = args.tau_A * torch.sum(torch.abs(one_adj_A))
-
+        loss += sparse_loss
         # other loss term
         if args.use_A_connect_loss:
             connect_gap = A_connect_loss(one_adj_A, args.graph_threshold, z_gap)
@@ -488,19 +493,24 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
             loss += .1 * (lambda_A * positive_gap + 0.5 * c_A * positive_gap * positive_gap)
 
         # compute h(A)
-        if args.no_lower:
-            h_A = _h_A(origin_A, args.data_variable_size)
-            loss += lambda_A * h_A + 0.5 * c_A * h_A * h_A + 100. * torch.trace(origin_A*origin_A) + sparse_loss #+  0.01 * torch.sum(variance * variance)
+        # if args.no_lower:
+        # h_A = _h_A(origin_A, args.data_variable_size)
+        # loss += lambda_A * h_A + 0.5 * c_A * h_A * h_A + 100. * torch.trace(origin_A*origin_A) + sparse_loss #+  0.01 * torch.sum(variance * variance)
+
+        loss += torch.sum(torch.abs(origin_A.tril()))
 
         #=========================
         # computing the losses finished
         #=========================
         loss.backward()
-        loss = optimizer.step()
-        if args.epoch <= args.post_train:
+        if args.ap == 0:
+            loss = optimizer.step()
+        if args.ap == 1:
             rie_optimizer.step()
 
-        # myA.data = stau(myA.data, args.tau_A*lr)
+        # loss = optimizer.step()
+
+        myA.data = stau(myA.data, args.tau_A*lr)
 
 
         if torch.sum(origin_A != origin_A):
@@ -514,7 +524,8 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
         # if batch_idx % 100 == 0:
         #     print(origin_A)
         hard_permute = hard_permutation(permute.clone())
-        Adj = torch.matmul(hard_permute.t(), torch.matmul(origin_A, hard_permute))
+        # Adj = torch.matmul(hard_permute.t(), torch.matmul(origin_A, hard_permute))
+        Adj = torch.matmul(torch.inverse(permute), torch.matmul(origin_A, permute))
         # print(permute)
         # Adj = torch.matmul(torch.inverse(permute), torch.matmul(origin_A, permute))
         # if args.epoch > args.post_train:
@@ -523,9 +534,10 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
         # compute metrics
         graph = Adj.data.clone().numpy()
         graph[np.abs(graph) < args.graph_threshold] = 0
-
-        fdr, tpr, fpr, shd, sid, nnz = count_accuracy(ground_truth_G, nx.DiGraph(graph))
-
+        
+        # fdr, tpr, fpr, shd, sid, nnz = count_accuracy(ground_truth_G, nx.DiGraph(graph))
+        ground_truth_permute = nx.DiGraph(torch.matmul(permute, torch.matmul(torch.from_numpy(nx.to_numpy_matrix(ground_truth_G)).float(), torch.inverse(permute))).detach().numpy())
+        fdr, tpr, fpr, shd, sid, nnz = count_accuracy(ground_truth_permute, nx.DiGraph(graph))
 
         mse_train.append(F.mse_loss(preds, x_permute).item())
         nll_train.append(loss_nll.item())
@@ -549,6 +561,7 @@ def train_lower(epoch, best_val_loss, ground_truth_G, lambda_A, c_A, optimizer):
           'mse_train: {:.10f}'.format(np.mean(mse_train)),
           'shd_trian: {:.10f}'.format(np.mean(shd_trian)),
           'sid_train: {:.10f}'.format(np.mean(sid_train)),
+          'Permuteness: {:.10f}'.format(torch.norm(torch.matmul(permute.t(), permute) - torch.eye(permute.size(0)))),
           'time: {:.4f}s'.format(time.time() - t))
     if args.save_folder and np.mean(nll_val) < best_val_loss:
         torch.save(encoder.state_dict(), encoder_file)
@@ -588,12 +601,19 @@ def run():
     k_max_iter = int(args.k_max_iter)
     h_A_old = np.inf
 
+    A_list = []
+    P_list = []
+
+    args.ap = 0
+
     if args.lower:
         for i in tqdm(range(args.pre_train)):
             rie_optimizer.zero_grad()
             loss = 1000000 * torch.sum(torch.abs(birkhoff.Matrix)) + 1000000 * ortho_loss(birkhoff.Matrix)
             loss.backward()
             rie_optimizer.step()
+            if i % 1000 == 0:
+                print(torch.norm(torch.matmul(birkhoff.Matrix.t(), birkhoff.Matrix) - torch.eye(birkhoff.Matrix.size(0))))
     args.epoch = 0
     try:
         for step_k in range(k_max_iter):
@@ -601,6 +621,14 @@ def run():
                 for epoch in range(args.epochs):
                     
                     ELBO_loss, NLL_loss, MSE_loss, graph, origin_A, Adj, permute = train_lower(epoch, best_ELBO_loss, ground_truth_G, lambda_A, c_A, optimizer)
+                    A_list.append(origin_A)
+                    P_list.append(permute)
+                    if epoch % 50 == 0 and epoch != 0:
+                        args.ap = 1 - args.ap
+                    if epoch > 1:
+                        A_d = torch.sum(torch.abs(A_list[-1] - A_list[-2]))
+                        P_d = torch.sum(torch.abs(P_list[-1] - P_list[-2]))
+                        print("A_d: {}; P_d: {}".format(A_d, P_d))
                     # elif args.mode == 'dag-dnn':
                     #     ELBO_loss, NLL_loss, MSE_loss, graph, origin_A = train_dnn(epoch, best_ELBO_loss, ground_truth_G, lambda_A, c_A, optimizer)
                     if ELBO_loss < best_ELBO_loss:

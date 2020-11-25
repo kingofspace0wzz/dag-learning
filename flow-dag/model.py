@@ -93,7 +93,8 @@ class MLPEncoder(nn.Module):
             print('nan error \n')
 
         # to amplify the value of A and accelerate convergence.
-        adj_A1 = torch.sinh(3.*self.adj_A*self.mask_A)
+        # adj_A1 = torch.sinh(3.*self.adj_A*self.mask_A)
+        adj_A1 = self.adj_A * self.mask_A
         # if self.lower:
         #     self.adj_A1 = self.adj_A1.tril() - torch.eye(self.adj_A1.size(0)).float() * self.adj_A1.diag()
         # adj_Aforz = I-A^T
@@ -103,6 +104,7 @@ class MLPEncoder(nn.Module):
         H1 = F.relu((self.fc1(inputs)))
         x = (self.fc2(H1))
         logits = torch.matmul(adj_Aforz, x+self.Wa) -self.Wa
+        # print(adj_A1)
 
         return x, logits, adj_A1, adj_A, self.z, self.z_positive, self.adj_A, self.Wa
 
@@ -148,7 +150,7 @@ class GAE(nn.Module):
     def __init__(self, n_in, n_xdims, n_hid, n_out, adj_A, mask_A, batch_size, do_prob=0., factor=True, tol = 0.1, lower=True):
         super(GAE, self).__init__()
         # self.adj_A = nn.Parameter(torch.from_numpy(adj_A).float(), requires_grad=True)
-        self.adj_A = nn.Parameter(torch.zeros(n_in, n_in).float(), requires_grad=True)
+        self.adj_A = nn.Parameter(torch.from_numpy(adj_A).float(), requires_grad=True)
         self.mask_A = torch.Tensor(mask_A)
         # self.fc1 = nn.Linear(n_in, n_in, bias = True)
         # self.fc2 = nn.Linear(n_in, n_in, bias = True)
@@ -166,7 +168,8 @@ class GAE(nn.Module):
             print('nan error \n')
 
         # to amplify the value of A and accelerate convergence.
-        adj_A1 = torch.sinh(3.*self.adj_A)
+        # adj_A1 = torch.sinh(3.*self.adj_A*self.mask_A)
+        adj_A1 = self.adj_A * self.mask_A
         # adj_A1 = self.adj_A
         # H = self.fc2(F.relu(self.fc1(inputs.squeeze()))).unsqueeze(-1)    # batch x d x 1
         # H2 = torch.matmul(adj_A1, H).squeeze() # batch x 10
